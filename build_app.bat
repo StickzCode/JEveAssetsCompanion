@@ -25,6 +25,7 @@ echo Building jEveAssetsCompanion.exe ...
     --noconsole ^
     --name "jEveAssetsCompanion" ^
     --hidden-import=profile_checker ^
+    --hidden-import=backup_service ^
     --hidden-import=pystray._win32 ^
     companion_app.py
 

@@ -23,7 +23,7 @@ import ctypes
 import tkinter as tk
 from tkinter import ttk, filedialog
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 APP_NAME = "jEveAssets Companion"
@@ -54,6 +54,11 @@ from profile_checker import (
     _find_profile_file,
     DEFAULT_WARN_DAYS,
 )
+from backup_service import (
+    run_backup,
+    should_backup,
+    cleanup_old_backups,
+)
 
 # ---------------------------------------------------------------------------
 # Config file
@@ -69,6 +74,11 @@ _DEFAULT_CONFIG = {
     "jeveassets_path": "",
     "use_jmem": False,
     "data_dir": "",
+    "backup_enabled": True,
+    "backup_dir": "",
+    "backup_interval_hours": 24,
+    "backup_keep_count": 7,
+    "last_backup_time": "",
 }
 
 def load_config() -> dict:
@@ -277,6 +287,83 @@ def show_settings_dialog(cfg: dict, on_save=None):
     ttk.Separator(frame, orient="horizontal").grid(row=row, column=0, columnspan=3, sticky="ew", pady=8)
     row += 1
 
+    # -- Backup section --
+    ttk.Label(frame, text="Backup", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=(0, 4))
+    row += 1
+
+    var_backup_enabled = tk.BooleanVar(value=cfg.get("backup_enabled", True))
+    ttk.Checkbutton(frame, text="Enable automatic backups", variable=var_backup_enabled).grid(
+        row=row, column=0, columnspan=3, sticky="w", pady=(0, 6)
+    )
+    row += 1
+
+    ttk.Label(frame, text="Backup directory:").grid(row=row, column=0, sticky="w", pady=(0, 6))
+    var_backup_dir = tk.StringVar(value=cfg.get("backup_dir", ""))
+    ttk.Entry(frame, textvariable=var_backup_dir, width=36).grid(row=row, column=1, sticky="w", pady=(0, 6))
+
+    def browse_backup():
+        initial = var_backup_dir.get().strip()
+        if initial and Path(initial).is_dir():
+            start = initial
+        else:
+            start = str(Path.home())
+        d = filedialog.askdirectory(title="Select backup directory", initialdir=start)
+        if d:
+            var_backup_dir.set(d)
+
+    ttk.Button(frame, text="...", width=3, command=browse_backup).grid(row=row, column=2, padx=(4, 0), pady=(0, 6))
+    row += 1
+
+    ttk.Label(frame, text="Keep last N backups:").grid(row=row, column=0, sticky="w", pady=(0, 6))
+    var_keep_count = tk.IntVar(value=cfg.get("backup_keep_count", 7))
+    ttk.Spinbox(frame, from_=1, to=365, textvariable=var_keep_count, width=8).grid(row=row, column=1, sticky="w", pady=(0, 6))
+    row += 1
+
+    last_backup = cfg.get("last_backup_time", "")
+    if last_backup:
+        try:
+            dt = datetime.fromisoformat(last_backup)
+            last_backup_display = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            last_backup_display = last_backup
+    else:
+        last_backup_display = "Never"
+    lbl_last_backup = ttk.Label(frame, text=f"Last backup: {last_backup_display}")
+    lbl_last_backup.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+    def do_backup_now():
+        data_dir_str = cfg.get("data_dir", "").strip()
+        data_dir = Path(data_dir_str) if data_dir_str else _default_profile_dir()
+        bdir = var_backup_dir.get().strip()
+        if not bdir:
+            ctypes.windll.user32.MessageBoxW(0, "Please set a backup directory first.", "Backup", 0x30)
+            return
+        result = run_backup(data_dir, Path(bdir))
+        if result["error"]:
+            ctypes.windll.user32.MessageBoxW(0, f"Backup failed:\n{result['error']}", "Backup Error", 0x10)
+        else:
+            cleanup_old_backups(Path(bdir), var_keep_count.get())
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cfg["last_backup_time"] = now_iso
+            save_config(cfg)
+            lbl_last_backup.config(text=f"Last backup: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            size_mb = result["total_bytes"] / (1024 * 1024)
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f"Backup complete!\n\n"
+                f"Files: {result['file_count']}\n"
+                f"Size: {size_mb:.1f} MB\n"
+                f"Location: {result['dest']}",
+                "Backup",
+                0x40,
+            )
+
+    ttk.Button(frame, text="Backup Now", command=do_backup_now).grid(row=row, column=2, padx=(4, 0), pady=(0, 6))
+    row += 1
+
+    ttk.Separator(frame, orient="horizontal").grid(row=row, column=0, columnspan=3, sticky="ew", pady=8)
+    row += 1
+
     var_startup = tk.BooleanVar(value=is_startup_enabled())
     ttk.Checkbutton(frame, text="Run at Windows startup", variable=var_startup).grid(
         row=row, column=0, columnspan=3, sticky="w", pady=(0, 6)
@@ -292,6 +379,9 @@ def show_settings_dialog(cfg: dict, on_save=None):
         cfg["jeveassets_path"] = var_path.get().strip()
         cfg["use_jmem"] = var_jmem.get()
         cfg["data_dir"] = var_datadir.get().strip()
+        cfg["backup_enabled"] = var_backup_enabled.get()
+        cfg["backup_dir"] = var_backup_dir.get().strip()
+        cfg["backup_keep_count"] = max(1, var_keep_count.get())
         save_config(cfg)
         set_startup_enabled(var_startup.get())
         saved[0] = True
@@ -541,8 +631,19 @@ class CompanionApp:
         self.do_check(notify=False)
         self._update_tooltip()
 
+    def _try_scheduled_backup(self):
+        if not self.cfg.get("backup_enabled", True):
+            return
+        if not self.cfg.get("backup_dir", "").strip():
+            return
+        interval = self.cfg.get("backup_interval_hours", 24)
+        last = self.cfg.get("last_backup_time", "")
+        if should_backup(last, interval):
+            self._do_backup(notify=True)
+
     def _checker_loop(self):
         self.do_check(notify=True)
+        self._try_scheduled_backup()
         self._seconds_until_check = self.check_interval
         threading.Thread(target=self._show_status, daemon=True).start()
         while self.running:
@@ -553,12 +654,49 @@ class CompanionApp:
             if self._seconds_until_check <= 0:
                 if self.running:
                     self.do_check(notify=True)
+                    self._try_scheduled_backup()
                 self._seconds_until_check = self.check_interval
 
     # -- menu callbacks -----------------------------------------------------
 
     def _on_show_status(self, _icon, _item):
         threading.Thread(target=self._show_status, daemon=True).start()
+
+    def _get_data_dir(self) -> Path:
+        data_dir_str = self.cfg.get("data_dir", "").strip()
+        return Path(data_dir_str) if data_dir_str else _default_profile_dir()
+
+    def _do_backup(self, notify: bool = True) -> bool:
+        backup_dir = self.cfg.get("backup_dir", "").strip()
+        if not backup_dir:
+            self._log("Backup skipped: no backup directory configured")
+            return False
+
+        data_dir = self._get_data_dir()
+        result = run_backup(data_dir, Path(backup_dir))
+
+        if result["error"]:
+            self._log(f"Backup failed: {result['error']}")
+            if notify:
+                show_notification("Backup Failed", result["error"])
+            return False
+
+        cleanup_old_backups(Path(backup_dir), self.cfg.get("backup_keep_count", 7))
+        now_iso = datetime.now(timezone.utc).isoformat()
+        self.cfg["last_backup_time"] = now_iso
+        save_config(self.cfg)
+
+        size_mb = result["total_bytes"] / (1024 * 1024)
+        self._log(f"Backup complete: {result['file_count']} files, {size_mb:.1f} MB -> {result['dest']}")
+        if notify:
+            show_notification(
+                "Backup Complete",
+                f"{result['file_count']} files ({size_mb:.1f} MB) backed up.",
+            )
+        return True
+
+    def _on_backup_now(self, _icon, _item):
+        threading.Thread(target=self._do_backup, daemon=True).start()
 
     def _on_open_jeveassets(self, _icon, _item):
         threading.Thread(target=lambda: open_jeveassets(self.cfg), daemon=True).start()
@@ -578,6 +716,7 @@ class CompanionApp:
         menu = pystray.Menu(
             pystray.MenuItem("Show Status", self._on_show_status, default=True),
             pystray.MenuItem(f"Open jEveAssets ({jar_label})", self._on_open_jeveassets),
+            pystray.MenuItem("Backup Now", self._on_backup_now),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings", self._on_settings),
             pystray.MenuItem("Quit", self._on_quit),
