@@ -1,0 +1,21 @@
+# PyInstaller output
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
