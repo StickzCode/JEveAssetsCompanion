@@ -15,6 +15,7 @@ It reads your jEveAssets profile (`.db` or `.xml`), checks the last-update times
 - **Open jEveAssets** -- launch `jeveassets.jar` or `jmemory.jar` directly from the tray menu or the status window.
 - **Run at Windows startup** -- toggle in Settings; no separate scripts needed.
 - **Single-instance guard** -- prevents multiple copies from running at the same time.
+- **Automatic backups** -- backs up your jEveAssets profile data (`.db`, `.xml`, `.BAC`, `.dat`, `.json`) to a local directory as compressed zip files, with a tiered retention policy: last 7 dailies, last 4 weeklies, and one per calendar month kept indefinitely.
 - **CLI mode** -- run with `--check` for a one-shot command-line check (useful for scripts / Task Scheduler).
 - **Persistent config** -- settings are stored in `%APPDATA%\jEveAssetsCompanion\config.json`. Use the "Open Config Folder" button in Settings to locate it.
 
@@ -50,6 +51,7 @@ Double-click `jEveAssetsCompanion.exe` (or run it with no arguments). A "T" icon
 |------|-------------|
 | **Show Status** | Opens a window listing every character and their token age (also triggered by double-click) |
 | **Open jEveAssets** | Launches `jeveassets.jar` (or `jmemory.jar` if configured) |
+| **Backup Now** | Immediately creates a backup of your jEveAssets data |
 | **Settings** | Opens the settings dialog |
 | **Quit** | Exits the app |
 
@@ -71,6 +73,8 @@ Double-click `jEveAssetsCompanion.exe` (or run it with no arguments). A "T" icon
 | jEveAssets folder | (auto) | Path to your jEveAssets installation (for "Open jEveAssets") |
 | Use jmemory.jar | off | Launch `jmemory.jar` instead of `jeveassets.jar` |
 | Data directory | (auto) | Override the jEveAssets data directory (`~/.jeveassets`) |
+| Enable automatic backups | on | Toggle scheduled backups of your jEveAssets data |
+| Backup directory | (none) | Where to save backup zip files (must be set for backups to run) |
 | Run at Windows startup | off | Create/remove a startup shortcut so the app launches on login |
 
 The "Open Config Folder" button at the bottom opens the folder containing `config.json` in Windows Explorer.
@@ -101,6 +105,22 @@ Prints the status of all characters and exits.
 | 1 | At least one character is past the threshold |
 | 2 | No jEveAssets profile found |
 
+## Backups
+
+When a backup directory is configured, the app automatically backs up your jEveAssets data once every 24 hours. You can also trigger a backup manually from the tray menu or the Settings dialog.
+
+Backups are stored as compressed zip files with a tiered retention policy:
+
+| Tier | Retention | Naming |
+|------|-----------|--------|
+| Daily | Last 7 days | `YYYY-MM-DD_daily.zip` |
+| Weekly | Last 4 weeks (1 per week) | `YYYY-MM-DD_weekly.zip` |
+| Monthly | Indefinitely (1 per month) | `YYYY-MM-DD_monthly.zip` |
+
+Older dailies are automatically promoted to weekly, and older weeklies to monthly. This gives you fine-grained recovery for recent data and long-term historical snapshots without unbounded disk usage.
+
+**Backed-up file types:** `.db`, `.xml`, `.xmlbackup`, `.BAC`, `.dat`, `.json`
+
 ## Where it looks for data
 
 - **Default:** `%USERPROFILE%\.jeveassets\profiles\`
@@ -123,5 +143,6 @@ python companion_app.py --check    # CLI mode
 |------|---------|
 | `companion_app.py` | Main application -- tray icon, settings, notifications, CLI |
 | `profile_checker.py` | Core logic -- reads jEveAssets profiles and returns token ages |
+| `backup_service.py` | Backup service -- zip-based backups with tiered retention (daily/weekly/monthly) |
 | `build_app.bat` | Build script -- packages everything into a single `.exe` |
 | `requirements.txt` | Python dependencies |

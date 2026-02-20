@@ -13,6 +13,8 @@ Config is stored in %APPDATA%/jEveAssetsCompanion/config.json and
 can be edited via the Settings dialog in the tray menu.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import json
@@ -24,7 +26,6 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional
 
 APP_NAME = "jEveAssets Companion"
 
@@ -77,7 +78,6 @@ _DEFAULT_CONFIG = {
     "backup_enabled": True,
     "backup_dir": "",
     "backup_interval_hours": 24,
-    "backup_keep_count": 7,
     "last_backup_time": "",
 }
 
@@ -314,11 +314,6 @@ def show_settings_dialog(cfg: dict, on_save=None):
     ttk.Button(frame, text="...", width=3, command=browse_backup).grid(row=row, column=2, padx=(4, 0), pady=(0, 6))
     row += 1
 
-    ttk.Label(frame, text="Keep last N backups:").grid(row=row, column=0, sticky="w", pady=(0, 6))
-    var_keep_count = tk.IntVar(value=cfg.get("backup_keep_count", 7))
-    ttk.Spinbox(frame, from_=1, to=365, textvariable=var_keep_count, width=8).grid(row=row, column=1, sticky="w", pady=(0, 6))
-    row += 1
-
     last_backup = cfg.get("last_backup_time", "")
     if last_backup:
         try:
@@ -331,22 +326,17 @@ def show_settings_dialog(cfg: dict, on_save=None):
     lbl_last_backup = ttk.Label(frame, text=f"Last backup: {last_backup_display}")
     lbl_last_backup.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-    def do_backup_now():
-        data_dir_str = cfg.get("data_dir", "").strip()
-        data_dir = Path(data_dir_str) if data_dir_str else _default_profile_dir()
-        bdir = var_backup_dir.get().strip()
-        if not bdir:
-            ctypes.windll.user32.MessageBoxW(0, "Please set a backup directory first.", "Backup", 0x30)
-            return
+    def _backup_worker(data_dir, bdir):
         result = run_backup(data_dir, Path(bdir))
         if result["error"]:
             ctypes.windll.user32.MessageBoxW(0, f"Backup failed:\n{result['error']}", "Backup Error", 0x10)
         else:
-            cleanup_old_backups(Path(bdir), var_keep_count.get())
+            cleanup_old_backups(Path(bdir))
             now_iso = datetime.now(timezone.utc).isoformat()
             cfg["last_backup_time"] = now_iso
             save_config(cfg)
-            lbl_last_backup.config(text=f"Last backup: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            root.after(0, lambda: lbl_last_backup.config(
+                text=f"Last backup: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"))
             size_mb = result["total_bytes"] / (1024 * 1024)
             ctypes.windll.user32.MessageBoxW(
                 0,
@@ -357,8 +347,21 @@ def show_settings_dialog(cfg: dict, on_save=None):
                 "Backup",
                 0x40,
             )
+        root.after(0, lambda: btn_backup.config(state="normal"))
 
-    ttk.Button(frame, text="Backup Now", command=do_backup_now).grid(row=row, column=2, padx=(4, 0), pady=(0, 6))
+    def do_backup_now():
+        data_dir_str = var_datadir.get().strip()
+        data_dir = Path(data_dir_str) if data_dir_str else _default_profile_dir()
+        bdir = var_backup_dir.get().strip()
+        if not bdir:
+            ctypes.windll.user32.MessageBoxW(0, "Please set a backup directory first.", "Backup", 0x30)
+            return
+        cfg["backup_dir"] = bdir
+        btn_backup.config(state="disabled")
+        threading.Thread(target=_backup_worker, args=(data_dir, bdir), daemon=True).start()
+
+    btn_backup = ttk.Button(frame, text="Backup Now", command=do_backup_now)
+    btn_backup.grid(row=row, column=2, padx=(4, 0), pady=(0, 6))
     row += 1
 
     ttk.Separator(frame, orient="horizontal").grid(row=row, column=0, columnspan=3, sticky="ew", pady=8)
@@ -381,7 +384,6 @@ def show_settings_dialog(cfg: dict, on_save=None):
         cfg["data_dir"] = var_datadir.get().strip()
         cfg["backup_enabled"] = var_backup_enabled.get()
         cfg["backup_dir"] = var_backup_dir.get().strip()
-        cfg["backup_keep_count"] = max(1, var_keep_count.get())
         save_config(cfg)
         set_startup_enabled(var_startup.get())
         saved[0] = True
@@ -492,7 +494,7 @@ def show_status_window(profile_path: Path, warn_days: int, cfg: dict = None,
 # Launch jEveAssets
 # ---------------------------------------------------------------------------
 
-def _find_jeveassets_jar(cfg: dict) -> Optional[Path]:
+def _find_jeveassets_jar(cfg: dict) -> Path | None:
     jar_name = "jmemory.jar" if cfg.get("use_jmem") else "jeveassets.jar"
     jeveassets_dir = cfg.get("jeveassets_path", "").strip()
     if jeveassets_dir:
@@ -539,7 +541,7 @@ class CompanionApp:
         self,
         profile_path: Path,
         cfg: dict,
-        log_file: Optional[Path] = None,
+        log_file: Path | None = None,
     ):
         self.profile_path = profile_path
         self.cfg = cfg
@@ -547,7 +549,7 @@ class CompanionApp:
         self.check_interval = cfg["check_interval"]
         self.log_file = log_file
         self.running = True
-        self.icon: Optional[pystray.Icon] = None
+        self.icon: pystray.Icon | None = None
         self._last_alert: dict[str, float] = {}
         self._stale_count = 0
         self._total_count = 0
@@ -681,7 +683,7 @@ class CompanionApp:
                 show_notification("Backup Failed", result["error"])
             return False
 
-        cleanup_old_backups(Path(backup_dir), self.cfg.get("backup_keep_count", 7))
+        cleanup_old_backups(Path(backup_dir))
         now_iso = datetime.now(timezone.utc).isoformat()
         self.cfg["last_backup_time"] = now_iso
         save_config(self.cfg)
@@ -830,17 +832,26 @@ def main():
     if args.days is not None:
         cfg["warn_days"] = args.days
 
-    data_dir_str = str(args.data_dir) if args.data_dir else cfg.get("data_dir", "").strip()
-    profile_dir = Path(data_dir_str) if data_dir_str else _default_profile_dir()
-    profile_path = _find_profile_file(profile_dir)
+    def _resolve_profile(cfg, args):
+        data_dir_str = str(args.data_dir) if args.data_dir else cfg.get("data_dir", "").strip()
+        profile_dir = Path(data_dir_str) if data_dir_str else _default_profile_dir()
+        return _find_profile_file(profile_dir), profile_dir
 
-    if profile_path is None:
-        msg = f"No jEveAssets profile found in:\n{profile_dir / 'profiles'}"
-        try:
-            ctypes.windll.user32.MessageBoxW(0, msg, f"{APP_NAME} - Error", 0x10)
-        except Exception:
-            print(msg, file=sys.stderr)
-        sys.exit(2)
+    profile_path, profile_dir = _resolve_profile(cfg, args)
+
+    while profile_path is None:
+        msg = (
+            f"No jEveAssets profile found in:\n"
+            f"{profile_dir / 'profiles'}\n\n"
+            "Would you like to open Settings to configure the data directory?"
+        )
+        # MB_YESNO | MB_ICONWARNING = 0x34, IDYES = 6
+        answer = ctypes.windll.user32.MessageBoxW(0, msg, f"{APP_NAME} - Setup", 0x34)
+        if answer != 6:
+            sys.exit(2)
+        show_settings_dialog(cfg)
+        save_config(cfg)
+        profile_path, profile_dir = _resolve_profile(cfg, args)
 
     log_file = args.log_file
     if log_file:

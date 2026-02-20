@@ -10,13 +10,14 @@ The caller decides the alert threshold; this module only returns the raw
 CLI fallback and matches the main app default in companion_app.py.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import sqlite3
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
 
 DEFAULT_WARN_DAYS = 14
 
@@ -24,7 +25,7 @@ def _default_profile_dir():
     base = os.environ.get("JEVEASSETS_DATA", os.path.expanduser("~"))
     return Path(base) / ".jeveassets"
 
-def _find_profile_file(profile_dir: Path) -> Optional[Path]:
+def _find_profile_file(profile_dir: Path) -> Path | None:
     profiles = profile_dir / "profiles"
     if not profiles.exists():
         return None
@@ -48,7 +49,7 @@ LAST_UPDATE_ATTRS = (
     "balancelastupdate",
 )
 
-def _get_last_update_ms(esiowner: ET.Element) -> Optional[int]:
+def _get_last_update_ms(esiowner: ET.Element) -> int | None:
     latest = None
     for attr in LAST_UPDATE_ATTRS:
         val = esiowner.get(attr)
@@ -58,7 +59,7 @@ def _get_last_update_ms(esiowner: ET.Element) -> Optional[int]:
                 latest = ts
     return latest
 
-def check_profile_db(profile_path: Path, warn_days: int = 0, debug: bool = False) -> List[Tuple[str, int, float]]:
+def check_profile_db(profile_path: Path, warn_days: int = 0, debug: bool = False) -> list[tuple[str, int, float]]:
     """
     Read profile from SQLite database and return list of (name, last_update_ms, days_ago).
     warn_days is accepted for interface consistency but filtering is done by the caller.
@@ -172,7 +173,7 @@ def check_profile_db(profile_path: Path, warn_days: int = 0, debug: bool = False
     conn.close()
     return results
 
-def check_profile_xml(profile_path: Path, warn_days: int = 0, debug: bool = False) -> List[Tuple[str, int, float]]:
+def check_profile_xml(profile_path: Path, warn_days: int = 0, debug: bool = False) -> list[tuple[str, int, float]]:
     """
     Parse profile XML and return list of (name, last_update_ms, days_ago).
     Only includes owners that have a last-update and are not marked invalid.
@@ -213,7 +214,7 @@ def check_profile_xml(profile_path: Path, warn_days: int = 0, debug: bool = Fals
 
     return results
 
-def check_profile(profile_path: Path, warn_days: int, debug: bool = False) -> List[Tuple[str, int, float]]:
+def check_profile(profile_path: Path, warn_days: int, debug: bool = False) -> list[tuple[str, int, float]]:
     """Check profile file - supports both database (.db) and XML formats."""
     if profile_path.suffix.lower() == '.db':
         return check_profile_db(profile_path, warn_days, debug)
